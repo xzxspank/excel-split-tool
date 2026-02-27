@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Excel文件拆分工具</title>
@@ -400,6 +401,10 @@
                 </div>
 
                 <div class="processing-area">
+                    <!-- Turnstile Widget -->
+                    <div id="turnstile-container" style="margin-bottom: 20px; display: flex; justify-content: center;">
+                        <div class="cf-turnstile" data-sitekey="0x4AAAAAACjEzGgDFU97MJXP" data-callback="onTurnstileSuccess"></div>
+                    </div>
                     <button class="btn btn-success" id="processBtn" style="width: 100%;" disabled>
                         <i class="fas fa-cogs"></i> 开始处理文件
                     </button>
@@ -448,26 +453,40 @@
             <div class="instruction-item">备案表数据将直接复制到"备案表模板.xlsx"中</div>
             <div class="instruction-item">申请表将按"提出单位及人员"拆分为多个文件</div>
             <div class="instruction-item">每个提出单位将生成两个文件：表头文件和内容文件</div>
-            <div class="instruction-item">生成的文件名格式：源文件名-备案表.xlsx，申请表表头-销售人员.xlsx，申请表内容-销售人员.xlsx</div>
-            <div class="instruction-item">多个源文件处理时，会为每个源文件创建独立文件夹</div>
+            <div class="instruction-item">所有操作均在浏览器本地完成，文件不会上传到任何服务器</div>
         </div>
 
         <footer>
-            <p>Excel文件拆分工具 &copy; 2026 | 基于 SheetJS 和 JSZip 构建</p>
+            <p>&copy; 2024 Excel文件拆分工具 | 本地安全处理</p>
         </footer>
     </div>
 
-    <!-- 引入必要的库 -->
+    <!-- 脚本引用 -->
     <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     
     <script>
+        let isTurnstileVerified = false;
+        function onTurnstileSuccess(token) {
+            isTurnstileVerified = true;
+            checkProcessButtonState();
+        }
+
+        function checkProcessButtonState() {
+            const processBtn = document.getElementById('processBtn');
+            if (uploadedFiles.length > 0 && isTurnstileVerified) {
+                processBtn.disabled = false;
+            } else {
+                processBtn.disabled = true;
+            }
+        }
+
         // 全局变量
         let uploadedFiles = [];
         let processedResults = [];
-        
-        // DOM元素
+
+        // DOM 元素
         const dropArea = document.getElementById('dropArea');
         const fileInput = document.getElementById('fileInput');
         const browseBtn = document.getElementById('browseBtn');
@@ -476,6 +495,7 @@
         const progressContainer = document.getElementById('progressContainer');
         const progressBar = document.getElementById('progressBar');
         const progressText = document.getElementById('progressText');
+        const resultsArea = document.getElementById('resultsArea');
         const emptyResults = document.getElementById('emptyResults');
         const resultsList = document.getElementById('resultsList');
         const resultsGrid = document.getElementById('resultsGrid');
@@ -501,10 +521,12 @@
                 dropArea.classList.add('dragover');
             });
             
+            // 拖拽离开
             dropArea.addEventListener('dragleave', () => {
                 dropArea.classList.remove('dragover');
             });
             
+            // 放置文件
             dropArea.addEventListener('drop', (e) => {
                 e.preventDefault();
                 dropArea.classList.remove('dragover');
@@ -549,10 +571,8 @@
             // 更新文件列表显示
             updateFileList();
             
-            // 如果至少有一个文件，启用处理按钮
-            if (uploadedFiles.length > 0) {
-                processBtn.disabled = false;
-            }
+            // 检查处理按钮状态
+            checkProcessButtonState();
         }
         
         // 更新文件列表显示
@@ -576,20 +596,11 @@
                             <div class="file-status ${fileObj.status}">${fileSize} - ${fileObj.status === 'ready' ? '准备就绪' : fileObj.status}</div>
                         </div>
                     </div>
-                    <button class="remove-btn" data-index="${index}">
+                    <button class="remove-btn" onclick="removeFile(${index})">
                         <i class="fas fa-times"></i>
                     </button>
                 `;
-                
                 fileList.appendChild(fileItem);
-            });
-            
-            // 为删除按钮添加事件
-            document.querySelectorAll('.remove-btn').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const index = parseInt(e.currentTarget.getAttribute('data-index'));
-                    removeFile(index);
-                });
             });
         }
         
@@ -597,10 +608,7 @@
         function removeFile(index) {
             uploadedFiles.splice(index, 1);
             updateFileList();
-            
-            if (uploadedFiles.length === 0) {
-                processBtn.disabled = true;
-            }
+            checkProcessButtonState();
         }
         
         // 格式化文件大小
@@ -612,559 +620,200 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
         
-        // 处理文件
+        // 处理文件逻辑
         async function processFiles() {
             if (uploadedFiles.length === 0) return;
             
             // 重置结果
             processedResults = [];
             resultsGrid.innerHTML = '';
-            resultsList.classList.add('hidden');
-            emptyResults.classList.remove('hidden');
-            batchDownload.classList.add('hidden');
             
             // 显示进度条
             progressContainer.classList.remove('hidden');
             processBtn.disabled = true;
-            processBtn.innerHTML = '<span class="loading-spinner"></span> 处理中...';
+            browseBtn.disabled = true;
+            dropArea.style.pointerEvents = 'none';
             
-            // 处理每个文件
-            for (let i = 0; i < uploadedFiles.length; i++) {
-                const fileObj = uploadedFiles[i];
-                
-                // 更新进度
-                progressBar.style.width = `${(i / uploadedFiles.length) * 100}%`;
-                progressText.textContent = `正在处理文件 ${i + 1}/${uploadedFiles.length}: ${fileObj.name}`;
-                
-                try {
-                    // 读取并处理Excel文件
-                    const results = await processExcelFile(fileObj.file, fileObj.name, fileObj.baseName);
+            try {
+                for (let i = 0; i < uploadedFiles.length; i++) {
+                    const fileObj = uploadedFiles[i];
+                    progressText.innerText = `正在处理: ${fileObj.name} (${i+1}/${uploadedFiles.length})`;
+                    updateProgress((i / uploadedFiles.length) * 100);
                     
-                    // 将结果添加到总结果中，并标记来源文件
-                    results.forEach(result => {
-                        result.sourceBaseName = fileObj.baseName;
-                    });
-                    processedResults.push(...results);
-                    
-                    // 更新文件状态
-                    fileObj.status = 'processed';
-                } catch (error) {
-                    console.error('处理文件时出错:', error);
-                    fileObj.status = 'error';
-                    alert(`处理文件 "${fileObj.name}" 时出错: ${error.message}`);
+                    await processExcelFile(fileObj);
                 }
                 
-                // 短暂延迟，让UI更新
-                await new Promise(resolve => setTimeout(resolve, 100));
+                updateProgress(100);
+                progressText.innerText = '处理完成！';
+                
+                // 显示结果
+                showResults();
+                
+            } catch (error) {
+                console.error('处理出错:', error);
+                alert('处理文件时发生错误，请检查文件格式是否正确。');
+                progressText.innerText = '处理失败';
+            } finally {
+                setTimeout(() => {
+                    progressContainer.classList.add('hidden');
+                    processBtn.disabled = false;
+                    browseBtn.disabled = false;
+                    dropArea.style.pointerEvents = 'auto';
+                    updateProgress(0);
+                }, 2000);
             }
-            
-            // 完成进度
-            progressBar.style.width = '100%';
-            progressText.textContent = '处理完成！';
-            
-            // 更新文件列表
-            updateFileList();
-            
-            // 显示结果
-            if (processedResults.length > 0) {
-                displayResults();
-            }
-            
-            // 重置按钮
-            setTimeout(() => {
-                processBtn.disabled = false;
-                processBtn.innerHTML = '<i class="fas fa-cogs"></i> 开始处理文件';
-                progressContainer.classList.add('hidden');
-                progressBar.style.width = '0%';
-            }, 1000);
         }
         
-        // 处理单个Excel文件
-        async function processExcelFile(file, fileName, baseName) {
+        function updateProgress(percent) {
+            progressBar.style.width = percent + '%';
+        }
+        
+        // 核心处理函数
+        function processExcelFile(fileObj) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 
                 reader.onload = function(e) {
                     try {
                         const data = new Uint8Array(e.target.result);
-                        const workbook = XLSX.read(data, {type: 'array', cellDates: true});
+                        const workbook = XLSX.read(data, { type: 'array' });
                         
-                        // 检查是否包含必要的工作表
-                        const sheetNames = workbook.SheetNames;
-                        if (!sheetNames.includes('备案表') || !sheetNames.includes('申请表')) {
-                            reject(new Error('文件必须包含"备案表"和"申请表"工作表'));
-                            return;
+                        // 1. 处理备案表
+                        if (workbook.SheetNames.includes('备案表')) {
+                            const beianSheet = workbook.Sheets['备案表'];
+                            const beianData = XLSX.utils.sheet_to_json(beianSheet, { header: 1 });
+                            
+                            // 创建新工作簿作为备案表结果
+                            const newBeianWB = XLSX.utils.book_new();
+                            const newBeianWS = XLSX.utils.aoa_to_sheet(beianData);
+                            XLSX.utils.book_append_sheet(newBeianWB, newBeianWS, '备案表');
+                            
+                            const out = XLSX.write(newBeianWB, { bookType: 'xlsx', type: 'array' });
+                            processedResults.push({
+                                name: `${fileObj.baseName}_备案表.xlsx`,
+                                data: out
+                            });
                         }
                         
-                        // 处理备案表
-                        const recordResults = processRecordSheet(workbook, baseName);
+                        // 2. 处理申请表
+                        if (workbook.SheetNames.includes('申请表')) {
+                            const shenqingSheet = workbook.Sheets['申请表'];
+                            const shenqingData = XLSX.utils.sheet_to_json(shenqingSheet, { header: 1 });
+                            
+                            if (shenqingData.length > 0) {
+                                // 假设第一行是表头
+                                const headers = shenqingData[0];
+                                // 找到"提出单位及人员"列索引
+                                const unitIndex = headers.findIndex(h => h && h.toString().includes('提出单位及人员'));
+                                
+                                if (unitIndex !== -1) {
+                                    // 按单位分组数据
+                                    const groups = {};
+                                    for (let i = 1; i < shenqingData.length; i++) {
+                                        const row = shenqingData[i];
+                                        const unit = row[unitIndex] || '未定义单位';
+                                        if (!groups[unit]) groups[unit] = [];
+                                        groups[unit].push(row);
+                                    }
+                                    
+                                    // 为每个单位生成文件
+                                    for (const unit in groups) {
+                                        // 过滤单位名称中的非法字符
+                                        const safeUnitName = unit.replace(/[\\/:*?"<>|]/g, "_");
+                                        
+                                        // 文件1: 表头文件 (只有表头)
+                                        const headerWB = XLSX.utils.book_new();
+                                        const headerWS = XLSX.utils.aoa_to_sheet([headers]);
+                                        XLSX.utils.book_append_sheet(headerWB, headerWS, '申请表');
+                                        const headerOut = XLSX.write(headerWB, { bookType: 'xlsx', type: 'array' });
+                                        processedResults.push({
+                                            name: `${fileObj.baseName}_${safeUnitName}_表头.xlsx`,
+                                            data: headerOut
+                                        });
+                                        
+                                        // 文件2: 内容文件 (表头 + 该单位数据)
+                                        const contentWB = XLSX.utils.book_new();
+                                        const contentWS = XLSX.utils.aoa_to_sheet([headers, ...groups[unit]]);
+                                        XLSX.utils.book_append_sheet(contentWB, contentWS, '申请表');
+                                        const contentOut = XLSX.write(contentWB, { bookType: 'xlsx', type: 'array' });
+                                        processedResults.push({
+                                            name: `${fileObj.baseName}_${safeUnitName}_内容.xlsx`,
+                                            data: contentOut
+                                        });
+                                    }
+                                }
+                            }
+                        }
                         
-                        // 处理申请表
-                        const applicationResults = processApplicationSheet(workbook, baseName);
-                        
-                        // 合并结果
-                        const allResults = [...recordResults, ...applicationResults];
-                        resolve(allResults);
-                    } catch (error) {
-                        reject(error);
+                        resolve();
+                    } catch (err) {
+                        reject(err);
                     }
                 };
                 
-                reader.onerror = function() {
-                    reject(new Error('读取文件失败'));
-                };
-                
-                reader.readAsArrayBuffer(file);
+                reader.onerror = reject;
+                reader.readAsArrayBuffer(fileObj.file);
             });
         }
         
-        // 处理备案表
-        function processRecordSheet(workbook, baseName) {
-            const results = [];
-            
-            // 读取备案表数据
-            const recordSheet = workbook.Sheets['备案表'];
-            const recordData = XLSX.utils.sheet_to_json(recordSheet, {header: 1});
-            
-            // 找到数据开始行（跳过标题和表头）
-            let dataStartRow = 0;
-            for (let i = 0; i < recordData.length; i++) {
-                if (recordData[i][0] === '序号' || (recordData[i][0] && recordData[i][0].toString().includes('序号'))) {
-                    dataStartRow = i + 1;
-                    break;
-                }
+        // 显示结果列表
+        function showResults() {
+            if (processedResults.length === 0) {
+                emptyResults.classList.remove('hidden');
+                resultsList.classList.add('hidden');
+                batchDownload.classList.add('hidden');
+                return;
             }
             
-            // 提取数据行
-            const recordRows = [];
-            for (let i = dataStartRow; i < recordData.length; i++) {
-                const row = recordData[i];
-                // 如果第一列为空，则可能是备注或结尾行，停止处理
-                if (!row || row.length === 0 || !row[0] || row[0].toString().trim() === '') {
-                    continue;
-                }
-                
-                // 检查是否是备注行
-                if (row[0] && row[0].toString().includes('备注：')) {
-                    break;
-                }
-                
-                // 提取有效数据（第2-7列对应B-G列）
-                const productName = row[1] || '';
-                const proposer = row[2] || '';
-                const selectedUnit = row[3] || '';
-                const quantity = row[4] || '';
-                const price = row[5] || '';
-                const remark = row[6] || '';
-                
-                // 添加到数据行
-                recordRows.push({
-                    产品名称: productName,
-                    提出单位: proposer,
-                    选择单位: selectedUnit,
-                    数量: quantity,
-                    文本1: price,
-                    备注: remark
-                });
-            }
-            
-            if (recordRows.length > 0) {
-                // 创建备案表工作簿
-                const recordWorkbook = XLSX.utils.book_new();
-                
-                // 创建表头
-                const header = [['备案表'], ['产品名称', '提出单位', '选择单位', '数量', '文本1', '备注']];
-                
-                // 创建数据行
-                const dataRows = recordRows.map(row => [
-                    row.产品名称,
-                    row.提出单位,
-                    row.选择单位,
-                    row.数量,
-                    row.文本1,
-                    row.备注
-                ]);
-                
-                // 合并表头和数据
-                const allRows = [...header, ...dataRows];
-                
-                // 创建工作表
-                const ws = XLSX.utils.aoa_to_sheet(allRows);
-                
-                // 设置列宽
-                const wscols = [
-                    {wch: 20}, // 产品名称
-                    {wch: 20}, // 提出单位
-                    {wch: 30}, // 选择单位
-                    {wch: 10}, // 数量
-                    {wch: 15}, // 文本1
-                    {wch: 15}  // 备注
-                ];
-                ws['!cols'] = wscols;
-                
-                // 添加到工作簿
-                XLSX.utils.book_append_sheet(recordWorkbook, ws, '备案表');
-                
-                // 生成Excel文件
-                const excelData = XLSX.write(recordWorkbook, {type: 'array', bookType: 'xlsx'});
-                const blob = new Blob([excelData], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-                
-                // 添加到结果
-                results.push({
-                    name: `${baseName}-备案表.xlsx`,
-                    blob: blob,
-                    type: '备案表',
-                    downloadUrl: URL.createObjectURL(blob)
-                });
-            }
-            
-            return results;
-        }
-        
-        // 处理申请表
-        function processApplicationSheet(workbook, baseName) {
-            const results = [];
-            
-            // 读取申请表数据
-            const applicationSheet = workbook.Sheets['申请表'];
-            const applicationData = XLSX.utils.sheet_to_json(applicationSheet, {header: 1});
-            
-            // 分割申请表为多个申请单
-            const applications = splitApplications(applicationData);
-            
-            // 处理每个申请单
-            applications.forEach((app, index) => {
-                // 提取销售人员名
-                const salesperson = extractSalesperson(app.header['提出单位及人员']);
-                
-                // 生成表头文件
-                if (app.header) {
-                    // 处理时间字段：将换行符替换为空格
-                    let proposeTime = app.header['提出时间'] || '';
-                    let completeTime = app.header['要求完成时间'] || '';
-                    
-                    // 将换行符替换为空格
-                    if (proposeTime) {
-                        proposeTime = proposeTime.toString().replace(/\n/g, ' ');
-                    }
-                    if (completeTime) {
-                        completeTime = completeTime.toString().replace(/\n/g, ' ');
-                    }
-                    
-                    const headerWorkbook = XLSX.utils.book_new();
-                    const headerRows = [
-                        ['明细表3'],
-                        ['提出单位及人员5', '提出时间6', '设计人员8', '要求完成时间9', '客户名称10', '是否收取制样费11'],
-                        [
-                            app.header['提出单位及人员'] || '',
-                            proposeTime,
-                            app.header['设计人员'] || '',
-                            completeTime,
-                            app.header['客户名称'] || '',
-                            app.header['是否收取制样费'] || '否'
-                        ]
-                    ];
-                    
-                    const ws = XLSX.utils.aoa_to_sheet(headerRows);
-                    
-                    // 设置列宽
-                    const wscols = [
-                        {wch: 25}, // 提出单位及人员5
-                        {wch: 20}, // 提出时间6
-                        {wch: 15}, // 设计人员8
-                        {wch: 20}, // 要求完成时间9
-                        {wch: 20}, // 客户名称10
-                        {wch: 20}  // 是否收取制样费11
-                    ];
-                    ws['!cols'] = wscols;
-                    
-                    XLSX.utils.book_append_sheet(headerWorkbook, ws, '明细表3');
-                    
-                    const excelData = XLSX.write(headerWorkbook, {type: 'array', bookType: 'xlsx'});
-                    const blob = new Blob([excelData], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-                    
-                    results.push({
-                        name: `申请表表头-${salesperson}.xlsx`,
-                        blob: blob,
-                        type: '申请表表头',
-                        downloadUrl: URL.createObjectURL(blob)
-                    });
-                }
-                
-                // 生成内容文件
-                if (app.products && app.products.length > 0) {
-                    const contentWorkbook = XLSX.utils.book_new();
-                    const headerRow = ['明细表1'];
-                    const columnHeaders = ['产品名称', '数量', '项目名称', '项目编号', '技术要求'];
-                    
-                    // 构建数据行
-                    const dataRows = app.products.map(product => [
-                        product['产品名称'] || '',
-                        product['数量'] || '',
-                        product['项目名称'] || '',
-                        product['项目编号'] || '',
-                        product['技术要求'] || ''
-                    ]);
-                    
-                    const allRows = [headerRow, columnHeaders, ...dataRows];
-                    const ws = XLSX.utils.aoa_to_sheet(allRows);
-                    
-                    // 设置列宽
-                    const wscols = [
-                        {wch: 20}, // 产品名称
-                        {wch: 10}, // 数量
-                        {wch: 25}, // 项目名称
-                        {wch: 20}, // 项目编号
-                        {wch: 40}  // 技术要求
-                    ];
-                    ws['!cols'] = wscols;
-                    
-                    XLSX.utils.book_append_sheet(contentWorkbook, ws, '明细表1');
-                    
-                    const excelData = XLSX.write(contentWorkbook, {type: 'array', bookType: 'xlsx'});
-                    const blob = new Blob([excelData], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-                    
-                    results.push({
-                        name: `申请表内容-${salesperson}.xlsx`,
-                        blob: blob,
-                        type: '申请表内容',
-                        downloadUrl: URL.createObjectURL(blob)
-                    });
-                }
-            });
-            
-            return results;
-        }
-        
-        // 分割申请表为多个申请单
-        function splitApplications(data) {
-            const applications = [];
-            let currentApp = null;
-            let inApplication = false;
-            let currentProduct = null;
-            let productCount = 0;
-            
-            for (let i = 0; i < data.length; i++) {
-                const row = data[i] || [];
-                
-                // 检查是否是申请单开始
-                if (row[0] && row[0].toString().includes('新产品制样（样品）需求申请单')) {
-                    // 保存上一个申请单
-                    if (currentApp) {
-                        if (currentProduct) {
-                            currentApp.products.push(currentProduct);
-                        }
-                        applications.push(currentApp);
-                    }
-                    
-                    // 开始新的申请单
-                    currentApp = {
-                        header: {},
-                        products: []
-                    };
-                    inApplication = true;
-                    productCount = 0;
-                    currentProduct = null;
-                    continue;
-                }
-                
-                if (!inApplication) continue;
-                
-                // 检查是否是申请单结束
-                if (row[0] && row[0].toString().includes('编制：')) {
-                    // 保存当前产品
-                    if (currentProduct) {
-                        currentApp.products.push(currentProduct);
-                        currentProduct = null;
-                    }
-                    
-                    inApplication = false;
-                    continue;
-                }
-                
-                // 提取表头信息
-                if (row[0] && row[0].toString().includes('提出单位及人员')) {
-                    currentApp.header['提出单位及人员'] = row[1] || '';
-                } else if (row[0] && row[0].toString().includes('提出时间')) {
-                    currentApp.header['提出时间'] = row[1] || '';
-                    currentApp.header['要求完成时间'] = row[3] || '';
-                } else if (row[0] && row[0].toString().includes('数量')) {
-                    currentApp.header['数量'] = row[1] || '';
-                    currentApp.header['设计人员'] = row[3] || '';
-                } else if (row[0] && row[0].toString().includes('客户名称')) {
-                    currentApp.header['客户名称'] = row[1] || '';
-                    currentApp.header['是否收取制样费'] = row[3] || '否';
-                }
-                
-                // 检查是否是产品开始
-                if (row[0] && (row[0].toString().includes('产品名称：') || row[0].toString().includes('一、产品名称：') || row[0].toString().includes('二、产品名称：'))) {
-                    // 保存上一个产品
-                    if (currentProduct) {
-                        currentApp.products.push(currentProduct);
-                    }
-                    
-                    // 开始新产品
-                    productCount++;
-                    currentProduct = {
-                        '产品名称': row[1] || '',
-                        '数量': row[3] || ''
-                    };
-                }
-                
-                // 提取产品详细信息
-                if (currentProduct) {
-                    if (row[0] && row[0].toString().includes('项目名称：')) {
-                        currentProduct['项目名称'] = row[1] || '';
-                    } else if (row[0] && row[0].toString().includes('项目编号：')) {
-                        currentProduct['项目编号'] = row[1] || '';
-                    } else if (row[0] && row[0].toString().includes('技术要求：')) {
-                        currentProduct['技术要求'] = row[1] || '';
-                    }
-                }
-            }
-            
-            // 保存最后一个申请单
-            if (currentApp) {
-                if (currentProduct) {
-                    currentApp.products.push(currentProduct);
-                }
-                applications.push(currentApp);
-            }
-            
-            return applications;
-        }
-        
-        // 提取销售人员名
-        function extractSalesperson(proposer) {
-            if (!proposer) return '未知';
-            
-            // 尝试从"营销中心-销售1"中提取"销售1"
-            const parts = proposer.split('-');
-            if (parts.length > 1) {
-                return parts[parts.length - 1];
-            }
-            
-            // 尝试从"营销中心\n销售1"中提取"销售1"
-            const lines = proposer.split('\n');
-            if (lines.length > 1) {
-                return lines[lines.length - 1];
-            }
-            
-            // 如果都没有，返回原值
-            return proposer;
-        }
-        
-        // 显示处理结果
-        function displayResults() {
-            if (processedResults.length === 0) return;
-            
-            // 清空结果网格
-            resultsGrid.innerHTML = '';
-            
-            // 按源文件分组显示
-            const groupedResults = {};
-            processedResults.forEach(result => {
-                const sourceName = result.sourceBaseName || '未知来源';
-                if (!groupedResults[sourceName]) {
-                    groupedResults[sourceName] = [];
-                }
-                groupedResults[sourceName].push(result);
-            });
-            
-            // 添加结果项，按源文件分组显示
-            Object.keys(groupedResults).forEach(sourceName => {
-                // 添加源文件标题
-                const sourceHeader = document.createElement('div');
-                sourceHeader.className = 'result-item';
-                sourceHeader.style.gridColumn = '1 / -1';
-                sourceHeader.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-                sourceHeader.style.color = 'white';
-                sourceHeader.innerHTML = `
-                    <div class="result-info">
-                        <i class="fas fa-folder result-icon"></i>
-                        <div class="result-name" style="font-weight: bold;">${sourceName}</div>
-                    </div>
-                    <div>${groupedResults[sourceName].length} 个文件</div>
-                `;
-                resultsGrid.appendChild(sourceHeader);
-                
-                // 添加该源文件的所有结果文件
-                groupedResults[sourceName].forEach((result, index) => {
-                    const resultItem = document.createElement('div');
-                    resultItem.className = 'result-item';
-                    
-                    // 根据类型设置图标
-                    let icon = 'fas fa-file-excel';
-                    if (result.type === '备案表') icon = 'fas fa-clipboard-list';
-                    else if (result.type === '申请表表头') icon = 'fas fa-heading';
-                    else if (result.type === '申请表内容') icon = 'fas fa-list-alt';
-                    
-                    resultItem.innerHTML = `
-                        <div class="result-info">
-                            <i class="${icon} result-icon"></i>
-                            <div class="result-name">${result.name}</div>
-                        </div>
-                        <a href="${result.downloadUrl}" download="${result.name}" class="result-download">
-                            <i class="fas fa-download"></i>
-                        </a>
-                    `;
-                    
-                    resultsGrid.appendChild(resultItem);
-                });
-            });
-            
-            // 显示结果区域
             emptyResults.classList.add('hidden');
             resultsList.classList.remove('hidden');
+            batchDownload.classList.remove('hidden');
             
-            // 如果有多于一个文件，显示打包下载按钮
-            if (uploadedFiles.length > 1) {
-                batchDownload.classList.remove('hidden');
-            }
+            resultsGrid.innerHTML = '';
+            processedResults.forEach((result, index) => {
+                const resultItem = document.createElement('div');
+                resultItem.className = 'result-item';
+                resultItem.innerHTML = `
+                    <div class="result-info">
+                        <i class="fas fa-file-excel result-icon"></i>
+                        <span class="result-name" title="${result.name}">${truncateString(result.name, 25)}</span>
+                    </div>
+                    <a class="result-download" onclick="downloadSingleFile(${index})" title="下载文件">
+                        <i class="fas fa-download"></i>
+                    </a>
+                `;
+                resultsGrid.appendChild(resultItem);
+            });
+        }
+        
+        function truncateString(str, num) {
+            if (str.length <= num) return str;
+            return str.slice(0, num) + '...';
+        }
+        
+        // 下载单个文件
+        function downloadSingleFile(index) {
+            const result = processedResults[index];
+            const blob = new Blob([result.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            saveAs(blob, result.name);
         }
         
         // 打包下载所有文件
-        async function downloadAllFiles() {
+        function downloadAllFiles() {
             if (processedResults.length === 0) return;
             
-            // 创建ZIP文件
             const zip = new JSZip();
-            
-            // 按源文件分组
-            const groupedResults = {};
             processedResults.forEach(result => {
-                const sourceName = result.sourceBaseName || '未知来源';
-                if (!groupedResults[sourceName]) {
-                    groupedResults[sourceName] = [];
-                }
-                groupedResults[sourceName].push(result);
+                zip.file(result.name, result.data);
             });
             
-            // 为每个源文件创建文件夹，并将文件放入
-            Object.keys(groupedResults).forEach(sourceName => {
-                const folder = zip.folder(sourceName);
-                groupedResults[sourceName].forEach(result => {
-                    folder.file(result.name, result.blob);
-                });
+            zip.generateAsync({ type: 'blob' }).then(function(content) {
+                saveAs(content, `拆分结果_${new Date().getTime()}.zip`);
             });
-            
-            // 生成ZIP文件
-            const zipBlob = await zip.generateAsync({type: 'blob'});
-            
-            // 下载ZIP文件
-            const timestamp = new Date().toISOString().slice(0, 19).replace(/[:]/g, '-');
-            const zipFileName = `Excel拆分结果_${timestamp}.zip`;
-            saveAs(zipBlob, zipFileName);
         }
         
-        // 初始化应用
-        function initApp() {
-            initEventListeners();
-            updateFileList();
-        }
-        
-        // 页面加载完成后初始化应用
-        document.addEventListener('DOMContentLoaded', initApp);
+        // 页面加载完成后初始化
+        window.onload = initEventListeners;
     </script>
 </body>
 </html>
